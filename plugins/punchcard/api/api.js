@@ -6,7 +6,6 @@ const plugin = {}
 (function (plugin) {
     plugins.register("/i", function(ob) {
         var params = ob.params;
-		console.log(params);
         // time of day parameter
         var dow_hour = {};
         if(params.qstring.begin_session || params.qstring.events) {
