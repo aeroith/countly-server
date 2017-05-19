@@ -12,12 +12,26 @@ var exports = {},
     request = require("request");
 
 (function (exports) {
+    var hardLimit = 100000;
     var contents = {
         "json": "application/json",
         "csv": "text/csv",
         "xls": "application/vnd.ms-excel"
     };
     var delimiter = "_";
+    function typeCheck(value){
+        if (common.isNumber(value)) {
+            //this is a seconds timestamp
+            if((Math.round(parseFloat(value, 10)) + "").length === 10){
+                value = moment(new Date(parseInt(value, 10)*1000)).format("ddd, D MMM YYYY HH:mm:ss");
+            }
+            //this is a miliseconds timestamp
+            else if((Math.round(parseFloat(value, 10)) + "").length === 13){
+                value = moment(new Date(parseInt(value, 10))).format("ddd, D MMM YYYY HH:mm:ss");
+            }
+        }
+        return value;
+    }
     function flattenArray(arr){
         if(Array.isArray(arr)){
             var fields = {};
@@ -32,7 +46,7 @@ var exports = {},
     function flattenObject(ob, fields) {
         var toReturn = {};   
         for (var i in ob) {
-            if(ob[i]._bsontype) {
+            if(ob[i] && ob[i]._bsontype) {
                 //this is ObjectID
                 ob[i] = ob[i]+"";
             }
@@ -51,7 +65,7 @@ var exports = {},
             } else {
                 if(fields)
                     fields[i] = true;
-                toReturn[i] = ob[i];
+                toReturn[i] = typeCheck(ob[i]);
             }
         }
         return toReturn;
@@ -134,8 +148,8 @@ var exports = {},
     * @param {object} [options.query={}] - database query which data to filter
     * @param {object} [options.projection={}] - database projections which fields to return
     * @param {object} [options.sort=natural] - sort object for cursor
-    * @param {number} [options.limit=unlimited] - amount of items to output
-    * @param {number} [options.skip=unlimited] - amount of items to skip from start
+    * @param {number} [options.limit=100000] - amount of items to output
+    * @param {number} [options.skip=0] - amount of items to skip from start
     * @param {string} [options.type=json] - type of data to output
     * @param {string} [options.filename] - name of the file to output, by default auto generated
     * @param {function} options.output - callback function where to pass data, by default outputs as file based on type
@@ -144,7 +158,16 @@ var exports = {},
         options.db = options.db || common.db;
         options.query = options.query || {};
         options.projection = options.projection || {};
-        options.filename = options.filename || (options.collection.charAt(0).toUpperCase() + options.collection.slice(1).toLowerCase())+"-"+moment().format("DD-MMM-YYYY");
+        if(!options.limit || parseInt(options.limit) > hardLimit)
+            options.limit = hardLimit;
+        var alternateName = (options.collection.charAt(0).toUpperCase() + options.collection.slice(1).toLowerCase());
+        if(options.skip){
+            alternateName += "_from_"+options.skip;
+            if(options.limit)
+                alternateName += "_to_"+(parseInt(options.skip)+parseInt(options.limit));
+        }
+        alternateName += "-"+moment().format("DD-MMM-YYYY");
+        options.filename = options.filename || alternateName;
         var cursor = options.db.collection(options.collection).find(options.query, options.projection);
         if(options.sort)
             cursor.sort(options.sort);
@@ -221,7 +244,10 @@ var exports = {},
         options.output = options.output || function(data){ exports.output(options.params, data, options.filename, options.type); };
         if(!data)
             data = [];
-        options.output(exports.convertData(data, options.type));
+        if(typeof data === "string")
+            options.output(data);
+        else    
+            options.output(exports.convertData(data, options.type));
     }
 }(exports));
 

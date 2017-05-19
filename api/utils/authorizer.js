@@ -14,18 +14,37 @@ var crypto = require("crypto");
     * @param {object} options - options for the task
     * @param {object} options.db - database connection
     * @param {number} options.ttl - amount of seconds for token to work, 0 works indefinately
+    * @param {bool} [options.multi=false] - if true, can be used many times until expired
     * @param {string} options.token - token to store, if not provided, will be generated
+    * @param {string} options.owner - id of the user who created this token
+    * @param {string} options.app - id of the app for which token was created
     * @param {function} options.callback - function called when saving was completed or errored, providing error object as first param and token string as second
     */
     authorizer.save = function (options) {
         options.db = options.db || common.db;
         options.token = options.token || authorizer.getToken();
         options.ttl = options.ttl || 0;
-        options.db.collection("auth_tokens").insert({_id:options.token, ttl:options.ttl, ends:options.ttl+Math.round(Date.now()/1000)}, function(err, res){
+        options.multi = options.multi || false;
+        options.owner = options.owner || "";
+        options.app = options.app || "";
+        options.db.collection("auth_tokens").insert({_id:options.token, ttl:options.ttl, ends:options.ttl+Math.round(Date.now()/1000), multi:options.multi, owner:options.owner, app:options.app}, function(err, res){
             if(typeof options.callback === "function"){
                 options.callback(err, options.token);
             }
         });
+    };
+    
+    /**
+    * Get whole token information from database
+    * @param {object} options - options for the task
+    * @param {object} options.db - database connection
+    * @param {string} options.token - token to store, if not provided, will be generated
+    * @param {function} options.callback - function called when reading was completed or errored, providing error object as first param and token object from database as second
+    */
+    authorizer.read = function (options) {
+        options.db = options.db || common.db;
+        options.token = options.token || authorizer.getToken();
+        options.db.collection("auth_tokens").findOn({_id:options.token}, options.callback);
     };
     
     /**
@@ -46,8 +65,9 @@ var crypto = require("crypto");
                 else if(res.ends >= Math.round(Date.now()/1000))
                     valid = true;
                 
-                //we can remove token either it was valid or not, we consumed it
-                options.db.collection("auth_tokens").remove({_id:options.token});
+                //consume token if expired or not multi
+                if(!res.multi || (res.ttl > 0 && res.ends > Math.round(Date.now()/1000)))
+                    options.db.collection("auth_tokens").remove({_id:options.token});
             }
             if(typeof options.callback === "function"){
                 options.callback(valid);
@@ -71,7 +91,7 @@ var crypto = require("crypto");
     */
     authorizer.clean = function (options) {
         options.db = options.db || common.db;
-        options.db.collection("auth_tokens").remove({ends:{$lt:Math.round(Date.now()/1000)}},options.callback);
+        options.db.collection("auth_tokens").remove({ends:{$lt:Math.round(Date.now()/1000)}, ttl:{$ne:0}},options.callback);
     };
     
 }(authorizer));

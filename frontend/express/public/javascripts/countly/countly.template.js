@@ -22,6 +22,13 @@
  */
 var countlyView = Backbone.View.extend({
     /**
+    * Checking state of view, if it is loaded
+    * @type {boolean}
+    * @instance
+    * @memberof countlyView
+    */
+    isLoaded:false,
+    /**
     * Handlebar template
     * @type {object}
     * @instance
@@ -63,16 +70,17 @@ var countlyView = Backbone.View.extend({
         }
     },
     /**
-    * This method is called when app is changed, default behavior is to call render again
+    * This method is called when app is changed, default behavior is to reset preloaded data as events
     * @memberof countlyView
     * @instance
     */
-    appChanged:function () {    //called when user changes selected app from the sidebar
+    appChanged:function (callback) {    //called when user changes selected app from the sidebar
         countlyEvent.reset();
 
         var self = this;
         $.when(countlyEvent.initialize()).then(function() {
-            self.render();
+            if(callback)
+                callback();
         });
     },
     /**
@@ -106,21 +114,41 @@ var countlyView = Backbone.View.extend({
     * @instance
     */
     render:function () {    //backbone.js view render function
+        var currLink = Backbone.history.fragment;
+
+        // Reset any active views and dropdowns
+        $("#main-views-container").find(".main-view").removeClass("active");
+        $("#top-bar").find(".dropdown.active").removeClass("active");
+
+        // Activate the main view and dropdown based on the active view
+        if (/^\/custom/.test(currLink) === true) {
+            $("#dashboards-main-view").addClass("active");
+            $("#dashboard-selection").addClass("active");
+        } else {
+            $("#analytics-main-view").addClass("active");
+            $("#app-navigation").addClass("active");
+        }
+
         $("#content-top").html("");
         this.el.html('');
 
         if (countlyCommon.ACTIVE_APP_ID) {
             var self = this;
             $.when(this.beforeRender(), initializeOnce()).then(function() {
+                self.isLoaded = true;
                 self.renderCommon();
                 self.afterRender();
                 app.pageScript();
             });
         } else {
+            this.isLoaded = true;
             this.renderCommon();
             this.afterRender();
             app.pageScript();
         }
+
+        // Top bar dropdowns are hidden by default, fade them in when view render is complete
+        $("#top-bar").find(".dropdown").fadeIn(2000);
 
         return this;
     },
@@ -185,6 +213,15 @@ var countlyView = Backbone.View.extend({
     * @instance
     */
     destroy:function () {}
+});
+
+/**
+* Drop class with embeded countly theme, use as any Drop class/instance
+* @name CountlyDrop
+* @global
+*/
+var CountlyDrop = Drop.createContext({
+  classPrefix: 'countly-drop',
 });
 
 var initializeOnce = _.once(function() {
@@ -287,7 +324,32 @@ var AppRouter = Backbone.Router.extend({
     main:function (forced) {
         var change = true,
             redirect = false;
-        if(location.hash != "#/" && countlyGlobal["apps"][countlyCommon.ACTIVE_APP_ID]){
+        // detect app switch like
+        //#/app/586e32ddc32cb30a01558cc1/analytics/events
+        if(location.hash.indexOf("#/app/") === 0){
+            var app_id = location.hash.replace("#/app/", "");
+            redirect = "#/";
+            if(app_id && app_id.length){
+                if(app_id.indexOf("/") !== -1){
+                    var parts = app_id.split("/");
+                    app_id = parts.shift();
+                    redirect = "#/"+parts.join("/");
+                }
+                if(app_id != countlyCommon.ACTIVE_APP_ID && countlyGlobal["apps"][app_id]){
+                    countlyCommon.setActiveApp(app_id);
+
+                    $("#active-app-name").text(countlyGlobal["apps"][app_id].name);
+                    $("#active-app-icon").css("background-image", "url('"+countlyGlobal["path"]+"appimages/"+app_id+".png')");
+
+                    app.onAppSwitch(app_id);
+                    app.activeView.appChanged(function(){
+                        app.navigate(redirect, true);
+                    });
+                    return;
+                }
+            }
+        }
+        else if(location.hash != "#/" && countlyGlobal["apps"][countlyCommon.ACTIVE_APP_ID]){
             $("#"+countlyGlobal["apps"][countlyCommon.ACTIVE_APP_ID].type+"-type a").each(function(){
                 if(this.hash != "#/" && this.hash != ""){
                     if(location.hash == this.hash && $(this).css('display') != 'none' ){
@@ -301,14 +363,18 @@ var AppRouter = Backbone.Router.extend({
                 }
             });
         }
+
         if(redirect){
             app.navigate(redirect, true);
         }
         else if(change){
-            this.navigate("/", true);
-            if(forced && this.activeView != this.appTypes[countlyGlobal["apps"][countlyCommon.ACTIVE_APP_ID].type]){
+            if(location.hash != "#/")
+                this.navigate("#/", true);
+            else
                 this.dashboard();
-            }
+        }
+        else{
+            this.activeView.render();
         }
     },
     dashboard:function () {
@@ -334,9 +400,12 @@ var AppRouter = Backbone.Router.extend({
     },
     performRefresh: function (self) {
         //refresh only if we are on current period
-        if(countlyCommon.periodObj.periodContainsToday){
-            self.activeView.refresh();
-            self.runRefreshScripts();
+        if(countlyCommon.periodObj.periodContainsToday && self.activeView.isLoaded){
+            self.activeView.isLoaded = false;
+            $.when(self.activeView.refresh()).then(function() {
+                self.activeView.isLoaded = true;
+                self.runRefreshScripts();
+            });
         }
     },
     renderWhenReady:function (viewName) { //all view renders end up here
@@ -725,7 +794,7 @@ var AppRouter = Backbone.Router.extend({
             if(parseInt(countlyGlobal.config["session_timeout"])){
                 var minTimeout, tenSecondTimeout, logoutTimeout, actionTimeout;
                 var shouldRecordAction = false;
-                var extendSession = function(){
+                var extendSession = function() {
                     $.ajax({
                         url:countlyGlobal["path"]+"/session",
                         success:function (result) {
@@ -737,13 +806,14 @@ var AppRouter = Backbone.Router.extend({
                                 shouldRecordAction = false;
                                 setTimeout(function(){
                                     shouldRecordAction = true;
-                                }, Math.round(countlyGlobal.config["session_timeout"]/2));
-                                resetSessionTimeouts(countlyGlobal.config["session_timeout"]);
+                                }, Math.round(parseInt(countlyGlobal.config["session_timeout"])/2));
+                                resetSessionTimeouts(parseInt(countlyGlobal.config["session_timeout"]));
                             }
                         }
                     });
-                }
-                var resetSessionTimeouts = function(timeout){
+                };
+
+                var resetSessionTimeouts = function(timeout) {
                     var minute = timeout - 60*1000;
                     if(minTimeout){
                         clearTimeout(minTimeout);
@@ -771,9 +841,10 @@ var AppRouter = Backbone.Router.extend({
                     logoutTimeout = setTimeout(function(){
                         extendSession();
                     }, timeout+1000);
-                }
-                resetSessionTimeouts(countlyGlobal.config["session_timeout"]);
-                $(document).click(function (event) {
+                };
+
+                resetSessionTimeouts(parseInt(countlyGlobal.config["session_timeout"]));
+                $(document).on("click mousemove extend-dashboard-user-session", function (event) {
                     if(shouldRecordAction)
                         extendSession();
                 });
@@ -803,72 +874,6 @@ var AppRouter = Backbone.Router.extend({
             }
 
             $(".reveal-language-menu").text(countlyCommon.BROWSER_LANG_SHORT.toUpperCase());
-
-            $(".apps-scrollable").sortable({
-                items:".app-container.app-navigate",
-                revert:true,
-                forcePlaceholderSize:true,
-                handle:".drag",
-                containment:"parent",
-                tolerance:"pointer",
-                stop:function () {
-                    var orderArr = $(".apps-scrollable").sortable( "toArray", {attribute:"data-id"} );
-
-                    $.ajax({
-                        type:"POST",
-                        url:countlyGlobal["path"]+"/dashboard/settings",
-                        data:{
-                            "app_sort_list":orderArr,
-                            _csrf:countlyGlobal['csrf_token']
-                        },
-                        success:function (result) {
-                        }
-                    });
-                }
-            });
-
-            $("#sort-app-button").click(function () {
-                $(".app-container.app-navigate .drag").fadeToggle();
-            });
-
-            $(".app-navigate").live("click", function () {
-                var appKey = $(this).data("key"),
-                    appId = $(this).data("id"),
-                    appName = $(this).find(".name").text(),
-                    appImage = $(this).find(".logo").css("background-image"),
-                    sidebarApp = $("#sidebar-app-select");
-
-                if (self.activeAppKey == appKey) {
-                    sidebarApp.removeClass("active");
-                    $("#app-nav").animate({left:'31px'}, {duration:500, easing:'easeInBack'});
-                    sidebarApp.find(".text").text(appName);
-                    sidebarApp.find(".logo").css("background-image", appImage);
-                    return false;
-                }
-
-                self.activeAppName = appName;
-                self.activeAppKey = appKey;
-                
-                $("#app-nav").animate({left:'31px'}, {duration:500, easing:'easeInBack', complete:function () {
-                    countlyCommon.setActiveApp(appId);
-                    sidebarApp.find(".text").text(appName);
-                    sidebarApp.find(".logo").css("background-image", appImage);
-                    sidebarApp.removeClass("active");
-                    app.onAppSwitch(appId);
-                    self.activeView.appChanged();
-                }});
-            });
-            
-            $(document).on("mouseenter", ".app-container", function(){
-                if(!$(this).find(".drag").is(":visible")){
-                    var elem = $(this);
-                    var name = elem.find(".name");
-
-                    if(name[0].scrollWidth >  name.innerWidth()) {
-                        elem.attr("title", name.text());
-                    }
-                }
-            });
 
             $("#sidebar-events").click(function (e) {
                 $.when(countlyEvent.refreshEvents()).then(function () {
@@ -910,11 +915,6 @@ var AppRouter = Backbone.Router.extend({
                         mainMenuItem.addClass("active menu-active");
                     } else {
                         self.sidebar.submenu.toggle();
-                    }
-
-                    if ($("#app-nav").offset().left == 201) {
-                        $("#app-nav").animate({left:'31px'}, {duration:500, easing:'easeInBack'});
-                        $("#sidebar-app-select").removeClass("active");
                     }
                 }
             });
@@ -959,7 +959,7 @@ var AppRouter = Backbone.Router.extend({
             });
 
             $('#sidebar-menu').slimScroll({
-                height: ($(window).height()-123-96+28)+'px',
+                height: ($(window).height())+'px',
                 railVisible: true,
                 railColor : '#4CC04F',
                 railOpacity : .2,
@@ -968,7 +968,7 @@ var AppRouter = Backbone.Router.extend({
 
             $( window ).resize(function() {
                 $('#sidebar-menu').slimScroll({
-                    height: ($(window).height()-123-96+28)+'px'
+                    height: ($(window).height())+'px'
                 });
             });
 
@@ -978,52 +978,9 @@ var AppRouter = Backbone.Router.extend({
                     return true;
                 }
 
-                if ($("#app-nav").offset().left == 201) {
-                    $("#app-nav").animate({left:'31px'}, {duration:500, easing:'easeInBack'});
-                    $("#sidebar-app-select").removeClass("active");
-                }
-
                 $(".sidebar-submenu .item").removeClass("active");
                 $(this).addClass("active");
                 $(this).parent().prev(".item").addClass("active");
-            });
-
-            $("#sidebar-app-select").click(function () {
-
-                if ($(this).hasClass("disabled")) {
-                    return true;
-                }
-
-                if ($(this).hasClass("active")) {
-                    $(this).removeClass("active");
-                } else {
-                    $(this).addClass("active");
-                }
-
-                $("#app-nav").show();
-                var left = $("#app-nav").offset().left;
-
-                if (left == 201) {
-                    $("#app-nav").animate({left:'31px'}, {duration:500, easing:'easeInBack'});
-                } else {
-                    $("#app-nav").animate({left:'201px'}, {duration:500, easing:'easeOutBack'});
-                }
-
-            });
-
-            $("#sidebar-bottom-container .reveal-menu").click(function () {
-                $("#language-menu").hide();
-                $("#sidebar-bottom-container .menu").toggle();
-            });
-
-            $("#sidebar-bottom-container .reveal-language-menu").click(function () {
-                $("#sidebar-bottom-container .menu").hide();
-                $("#language-menu").toggle();
-            });
-
-            $("#sidebar-bottom-container .item").click(function () {
-                $("#sidebar-bottom-container .menu").hide();
-                $("#language-menu").hide();
             });
 
             $("#language-menu .item").click(function () {
@@ -1073,12 +1030,6 @@ var AppRouter = Backbone.Router.extend({
                 });
             });
 
-            /*$("#account-settings").click(function () {
-                CountlyHelpers.popup("#edit-account-details");
-                $(".dialog #username").val($("#menu-username").text());
-                $(".dialog #api-key").val($("#user-api-key").val());
-            });*/
-
             $("#save-account-details:not(.disabled)").live('click', function () {
                 var username = $(".dialog #username").val(),
                     old_pwd = $(".dialog #old_pwd").val(),
@@ -1126,17 +1077,10 @@ var AppRouter = Backbone.Router.extend({
                 });
             });
 
-            $('.apps-scrollable').slimScroll({
-                height:'100%',
-                start:'top',
-                wheelStep:10,
-                position:'right',
-                disableFadeOut:true
-            });
-
             var help = _.once(function () {
                 CountlyHelpers.alert(jQuery.i18n.map["help.help-mode-welcome"], "black");
             });
+
             $(".help-toggle, #help-toggle").click(function (e) {
 
                 e.stopPropagation();
@@ -1346,6 +1290,115 @@ var AppRouter = Backbone.Router.extend({
                     }
                 }
             });
+
+            // TOPBAR
+            var $topbar = $("#top-bar"),
+                $appNavigation = $("#app-navigation");
+
+            $topbar.on("click", ".dropdown", function(e) {
+                var wasActive = $(this).hasClass("clicked");
+
+                $topbar.find(".dropdown").removeClass("clicked");
+
+                if (wasActive) {
+                    $(this).removeClass("clicked");
+                } else {
+                    $(this).find(".nav-search input").val("");
+                    $(this).find(".list").scrollTop(0);
+                    $(this).addClass("clicked");
+                }
+
+                e.stopPropagation();
+            });
+
+            $topbar.on("click", ".dropdown .nav-search", function(e) {
+                e.stopPropagation();
+            });
+
+            $topbar.on("click", ".dropdown .item", function(e) {
+                $topbar.find(".dropdown").removeClass("clicked");
+                e.stopPropagation();
+            });
+
+            $("body").on("click", function() {
+                $topbar.find(".dropdown").removeClass("clicked");
+            });
+
+            // Prevent body scroll after list inside dropdown is scrolled till the end
+            // Applies to any element that has prevent-body-scroll class as well
+            $("body").on('DOMMouseScroll mousewheel', ".dropdown .list, .prevent-body-scroll", function(ev) {
+                var $this = $(this),
+                    scrollTop = this.scrollTop,
+                    scrollHeight = this.scrollHeight,
+                    height = $this.innerHeight(),
+                    delta = ev.originalEvent.wheelDelta,
+                    up = delta > 0;
+
+                var prevent = function() {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                    ev.returnValue = false;
+                    return false;
+                };
+
+                if (!up && -delta > scrollHeight - height - scrollTop) {
+                    // Scrolling down, but this will take us past the bottom.
+                    $this.scrollTop(scrollHeight);
+                    return prevent();
+                } else if (up && delta > scrollTop) {
+                    // Scrolling up, but this will take us past the top.
+                    $this.scrollTop(0);
+                    return prevent();
+                }
+            });
+
+            $appNavigation.on("click", ".item", function () {
+                var appKey = $(this).data("key"),
+                    appId = $(this).data("id"),
+                    appName = $(this).find(".name").text(),
+                    appImage = $(this).find(".app-icon").css("background-image");
+
+                $("#active-app-icon").css("background-image", appImage);
+                $("#active-app-name").text(appName);
+
+                if (self.activeAppKey != appKey) {
+                    self.activeAppName = appName;
+                    self.activeAppKey = appKey;
+                    var old_id = countlyCommon.ACTIVE_APP_ID;
+                    countlyCommon.setActiveApp(appId);
+                    self.activeView.appChanged(function(){app.onAppSwitch(appId);});
+                }
+            });
+
+            $appNavigation.on("click", function() {
+                var appList = $(this).find(".list"),
+                    apps = _.sortBy(countlyGlobal.apps, function(app){ return app.name.toLowerCase(); });
+
+                appList.html("");
+
+                for (var i = 0; i < apps.length; i++) {
+                    var currApp = apps[i];
+
+                    var app = $("<div></div>");
+                    app.addClass("item searchable");
+                    app.data("key", currApp.key);
+                    app.data("id", currApp._id);
+
+                    var appIcon = $("<div></div>");
+                    appIcon.addClass("app-icon");
+                    appIcon.css("background-image", "url(" + countlyGlobal["cdn"] + "appimages/" + currApp._id + ".png");
+
+                    var appName = $("<div></div>");
+                    appName.addClass("name");
+                    appName.attr("title", currApp.name);
+                    appName.text(currApp.name);
+
+                    app.append(appIcon);
+                    app.append(appName);
+
+                    appList.append(app);
+                }
+            });
         });
 
         if (!_.isEmpty(countlyGlobal['apps'])) {
@@ -1353,8 +1406,8 @@ var AppRouter = Backbone.Router.extend({
                 countlyCommon.setActiveApp(countlyGlobal["defaultApp"]._id);
                 self.activeAppName = countlyGlobal["defaultApp"].name;
             } else {
-                $("#sidebar-app-select").find(".logo").css("background-image", "url('"+countlyGlobal["cdn"]+"appimages/" + countlyCommon.ACTIVE_APP_ID + ".png')");
-                $("#sidebar-app-select .text").text(countlyGlobal['apps'][countlyCommon.ACTIVE_APP_ID].name);
+                $("#active-app-icon").css("background-image", "url('"+countlyGlobal["cdn"]+"appimages/" + countlyCommon.ACTIVE_APP_ID + ".png')");
+                $("#active-app-name").text(countlyGlobal['apps'][countlyCommon.ACTIVE_APP_ID].name);
                 self.activeAppName = countlyGlobal['apps'][countlyCommon.ACTIVE_APP_ID].name;
             }
         } else {
@@ -1661,13 +1714,6 @@ var AppRouter = Backbone.Router.extend({
         jQuery.fn.dataTableExt.oSort['format-ago-desc']  = function(x, y) {
             return y-x;
         };
-        
-        function getFileName(ext){
-            var name = "countly";
-            if($(".widget-header .title").length)
-                name = $(".widget-header .title").first().text();
-            return (name.charAt(0).toUpperCase() + name.slice(1).toLowerCase())+"-"+moment().format("DD-MMM-YYYY")+"."+ext;
-        }
 
         $.extend(true, $.fn.dataTable.defaults, {
             "sDom": '<"dataTable-top"lfpT>t<"dataTable-bottom"i>',
@@ -1687,134 +1733,8 @@ var AppRouter = Backbone.Router.extend({
                 "sSearch": jQuery.i18n.map["common.search"],
                 "sLengthMenu": jQuery.i18n.map["common.show-items"]+"<input type='number' id='dataTables_length_input'/>"
             },
-            "oTableTools": {
-                "sSwfPath": countlyGlobal["cdn"]+"javascripts/dom/dataTables/swf/copy_csv_xls.swf",
-                "aButtons": [
-                    {
-                        "sExtends": "csv",
-                        "sButtonText": jQuery.i18n.map["common.save-to-csv"],
-                        "fnClick": function (nButton, oConfig, flash) {
-                            var tableCols = $(nButton).parents(".dataTables_wrapper").find(".dataTable").dataTable().fnSettings().aoColumns,
-                                tableData = this.fnGetTableData(oConfig).split(/\r\n|\r|\n/g).join('","').split('","'),
-                                retStr = "";
-                                
-                            //check if exported data needs to be processed by some other lib    
-                            if(tableCols[0].sExport && app.dataExports[tableCols[0].sExport]){
-                                
-                                //get data to export
-                                var data = app.dataExports[tableCols[0].sExport]();
-                                
-                                //get all columns
-                                var cols = [];
-                                for(var i = 0; i < data.length; i++){
-                                    for(var col in data[i]){
-                                         if(cols.indexOf(col) === -1)
-                                             cols.push(col);
-                                        
-                                     }
-                                }
-                                
-                                //generate data in the needed format
-                                var tdata = JSON.parse(JSON.stringify(cols));
-                                for(var i = 0; i < data.length; i++){
-                                    for(var j = 0; j < cols.length; j++){
-                                        tdata.push('"'+(data[i][cols[j]] || ""));
-                                    }
-                                }
-                                
-                                tableCols = cols;
-                                tableData = tdata;
-                            }
-
-                            for (var i = 0;  i < tableData.length; i++) {
-                                tableData[i] = tableData[i].replace(/^"|"$/g, "");
-
-                                if (i >= tableCols.length) {
-                                    var colIndex = i % tableCols.length;
-                                     
-                                    if (tableCols[colIndex].sType == "formatted-num") {
-                                        tableData[i] = tableData[i].replace(/,/g, "");
-                                    } else if (tableCols[colIndex].sType == "percent") {
-                                        tableData[i] = tableData[i].replace("%", "");
-                                    } else if (tableCols[colIndex].sType == "format-ago" || tableCols[colIndex].sType == "event-timeline") {
-                                        tableData[i] = tableData[i].split("|").pop();
-                                    }
-                                }
-
-                                if ((i + 1) % tableCols.length == 0) {
-                                    retStr += "\"" + tableData[i] + "\"\r\n";
-                                } else {
-                                    retStr += "\"" + tableData[i] + "\", ";
-                                }
-                            }
-                            flash.setFileName( getFileName("csv") );
-                            this.fnSetText(flash, retStr);
-                        }
-                    },
-                    {
-                        "sExtends": "xls",
-                        "sButtonText": jQuery.i18n.map["common.save-to-excel"],
-                        "fnClick": function (nButton, oConfig, flash) {
-                            var tableCols = $(nButton).parents(".dataTables_wrapper").find(".dataTable").dataTable().fnSettings().aoColumns,
-                                tableData = this.fnGetTableData(oConfig).split(/\r\n|\r|\n/g).join('\t').split('\t'),
-                                retStr = "";
-                                
-                            //check if exported data needs to be processed by some other lib    
-                            if(tableCols[0].sExport && app.dataExports[tableCols[0].sExport]){
-                                
-                                //get data to export
-                                var data = app.dataExports[tableCols[0].sExport]();
-                                
-                                //get all columns
-                                var cols = [];
-                                for(var i = 0; i < data.length; i++){
-                                    for(var col in data[i]){
-                                         if(cols.indexOf(col) === -1)
-                                             cols.push(col);
-                                        
-                                     }
-                                }
-                                
-                                //generate data in the needed format
-                                var tdata = JSON.parse(JSON.stringify(cols));
-                                for(var i = 0; i < data.length; i++){
-                                    for(var j = 0; j < cols.length; j++){
-                                        tdata.push(data[i][cols[j]] || "");
-                                    }
-                                }
-                                
-                                tableCols = cols;
-                                tableData = tdata;
-                            }
-
-                            for (var i = 0;  i < tableData.length; i++) {
-                                if (i >= tableCols.length) {
-                                    var colIndex = i % tableCols.length;
-
-                                    if (tableCols[colIndex].sType == "formatted-num") {
-                                        tableData[i] = parseFloat(tableData[i].replace(/,/g, "")).toLocaleString();
-                                    } else if (tableCols[colIndex].sType == "percent") {
-                                        tableData[i] = parseFloat(tableData[i].replace("%", "")).toLocaleString();
-                                    } else if (tableCols[colIndex].sType == "numeric") {
-                                        tableData[i] = parseFloat(tableData[i]).toLocaleString();
-                                    } else if (tableCols[colIndex].sType == "format-ago" || tableCols[colIndex].sType == "event-timeline") {
-                                        tableData[i] = tableData[i].split("|").pop();
-                                    }
-                                }
-
-                                if ((i + 1) % tableCols.length == 0) {
-                                    retStr += tableData[i] + "\r\n";
-                                } else {
-                                    retStr += tableData[i] + "\t";
-                                }
-                            }
-                            flash.setFileName( getFileName("xls") );
-                            this.fnSetText(flash, retStr);
-                        }
-                    }
-                ]
-            },
             "fnInitComplete": function(oSettings, json) {
+                var dtable = this;
                 var saveHTML = "<div class='save-table-data' data-help='help.datatables-export'><i class='fa fa-download'></i></div>",
                     searchHTML = "<div class='search-table-data'><i class='fa fa-search'></i></div>",
                     tableWrapper = $("#" + oSettings.sTableId + "_wrapper");
@@ -1823,30 +1743,80 @@ var AppRouter = Backbone.Router.extend({
                 $(searchHTML).insertBefore(tableWrapper.find(".dataTables_filter"));
                 tableWrapper.find(".dataTables_filter").html(tableWrapper.find(".dataTables_filter").find("input").attr("Placeholder",jQuery.i18n.map["common.search"]).clone(true));
 
-                tableWrapper.find(".save-table-data").on("click", function() {
-                    if ($(this).next(".DTTT_container").css('visibility') == 'hidden') {
-                        $(this).next(".DTTT_container").css("visibility", 'visible');
-                    } else {
-                        $(this).next(".DTTT_container").css("visibility", 'hidden');
-                    }
-                });
-
                 tableWrapper.find(".search-table-data").on("click", function() {
                     $(this).next(".dataTables_filter").toggle();
                     $(this).next(".dataTables_filter").find("input").focus();
                 });
                 
                 if(oSettings.oFeatures.bServerSide){
-                    tableWrapper.find(".save-table-data").tipsy({gravity:$.fn.tipsy.autoNS, title:function () {
-                        return ($(this).data("help")) ? jQuery.i18n.map[$(this).data("help")] : "";
-                    }, fade:true, offset:5, cssClass:'yellow', opacity:1, html:true});
                     tableWrapper.find(".dataTables_length").show();
                     tableWrapper.find('#dataTables_length_input').bind( 'change.DT', function(e) {
                         //store.set("iDisplayLength", $(this).val());
                     });
+                    //slowdown serverside filtering
+                    tableWrapper.find('.dataTables_filter input').unbind();
+                    var timeout = null;
+                    tableWrapper.find('.dataTables_filter input').bind('keyup', function(e) {
+                        $this = this;
+                        if(timeout)
+                        {
+                            clearTimeout(timeout);
+                            timeout = null;
+                        }
+                        timeout = setTimeout(function(){
+                            oSettings.oInstance.fnFilter($this.value);   
+                        }, 1000);
+                    });
+                    if(app.activeView.getExportQuery){
+                        //create export dialog
+                        var exportDrop = new CountlyDrop({
+                            target: tableWrapper.find('.save-table-data')[0],
+                            content: "",
+                            position: 'right middle',
+                            classes: "server-export",
+                            constrainToScrollParent: false,
+                            remove:true,
+                            openOn: "click"
+                        });
+                        tableWrapper.find(".save-table-data").off().on("click", function(){
+                            $(".server-export .countly-drop-content").empty().append(CountlyHelpers.export(oSettings._iRecordsDisplay, app.activeView.getExportQuery()).removeClass("dialog"));
+                            exportDrop.position();
+                        });
+                    }
+                    else{
+                        tableWrapper.find(".dataTables_length").hide();
+                        //create export dialog
+                        var exportDrop = new CountlyDrop({
+                            target: tableWrapper.find('.save-table-data')[0],
+                            content: "",
+                            position: 'right middle',
+                            classes: "server-export",
+                            constrainToScrollParent: false,
+                            remove:true,
+                            openOn: "click"
+                        });
+                        tableWrapper.find(".save-table-data").off().on("click", function(){
+                            $(".server-export .countly-drop-content").empty().append(CountlyHelpers.tableExport(dtable, {api_key: countlyGlobal["member"].api_key}).removeClass("dialog"));
+                            exportDrop.position();
+                        });
+                    }
                 }
                 else{
                     tableWrapper.find(".dataTables_length").hide();
+                    //create export dialog
+                    var exportDrop = new CountlyDrop({
+                        target: tableWrapper.find('.save-table-data')[0],
+                        content: "",
+                        position: 'right middle',
+                        classes: "server-export",
+                        constrainToScrollParent: false,
+                        remove:true,
+                        openOn: "click"
+                    });
+                    tableWrapper.find(".save-table-data").off().on("click", function(){
+                        $(".server-export .countly-drop-content").empty().append(CountlyHelpers.tableExport(dtable, {api_key: countlyGlobal["member"].api_key}).removeClass("dialog"));
+                        exportDrop.position();
+                    });
                 }
 
                 //tableWrapper.css({"min-height": tableWrapper.height()});
@@ -2243,13 +2213,6 @@ var AppRouter = Backbone.Router.extend({
 
             if (Object.prototype.toString.call(selectedDateID) !== '[object Array]') {
                 $("#" + selectedDateID).addClass("active");
-            }
-            
-            if (Backbone.history.fragment == "/manage/apps") {
-                $("#sidebar-app-select").addClass("disabled");
-                $("#sidebar-app-select").removeClass("active");
-            } else {
-                $("#sidebar-app-select").removeClass("disabled");
             }
             
             if(self.pageScripts[Backbone.history.fragment])

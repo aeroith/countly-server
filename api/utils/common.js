@@ -5,7 +5,7 @@
 
 /** @lends module:api/utils/common */
 var common = {},
-    moment = require('moment'),
+    moment = require('moment-timezone'),
     time = require('time')(Date),
     crypto = require('crypto'),
     mongo = require('mongoskin'),
@@ -472,6 +472,7 @@ var common = {},
 		currDateWithoutTimestamp.setTimezone(appTimezone);
 
         var tmpMoment = moment(currDate);
+        tmpMoment.tz(appTimezone);
 
         /**
         * @typedef timeObject
@@ -494,7 +495,7 @@ var common = {},
         return {
             now: tmpMoment,
             nowUTC: moment.utc(currDate),
-            nowWithoutTimestamp: moment(currDateWithoutTimestamp),
+            nowWithoutTimestamp: moment(currDateWithoutTimestamp).tz(appTimezone),
             timestamp: currTimestamp,
             mstimestamp: curMsTimestamp,
             yearly: tmpMoment.format("YYYY"),
@@ -979,7 +980,7 @@ var common = {},
                     }
             
                     if (lastDate.getFullYear() == params.time.yearly &&
-                        Math.ceil(common.moment(lastDate).format("DDD") / 7) < params.time.weekly) {
+                        Math.ceil(common.moment(lastDate).tz(params.appTimezone).format("DDD") / 7) < params.time.weekly) {
                         updateUsersZero["d.w" + params.time.weekly + '.' + metric] = 1;
                     }
             
@@ -1024,7 +1025,7 @@ var common = {},
                                 }
                         
                                 if (lastDate.getFullYear() == params.time.yearly &&
-                                    Math.ceil(common.moment(lastDate).format("DDD") / 7) < params.time.weekly) {
+                                    Math.ceil(common.moment(lastDate).tz(params.appTimezone).format("DDD") / 7) < params.time.weekly) {
                                     updateUsersZero["d.w" + params.time.weekly + '.' + escapedMetricVal + '.' + metric] = 1;
                                 }
                         
@@ -1117,13 +1118,18 @@ var common = {},
     * Compares two version strings with : as delimiter (which we used to escape dots in app versions)
     * @param {string} v1 - first version
     * @param {string} v2 - second version
+    * @param {object} options - providing additional options
+    * @param {string} options.delimiter - delimiter between version, subversion, etc, defaults :
+    * @param {string} options.zeroExtend - changes the result if one version string has less parts than the other. In this case the shorter string will be padded with "zero" parts instead of being considered smaller.
+    * @param {string} options.lexicographical - compares each part of the version strings lexicographically instead of naturally; this allows suffixes such as "b" or "dev" but will cause "1.10" to be considered smaller than "1.2".
     * @returns {number} 0 if they are both the same, 1 if first one is higher and -1 is second one is highet
     */
 	common.versionCompare = function(v1, v2, options) {
 		var lexicographical = options && options.lexicographical,
 			zeroExtend = options && options.zeroExtend,
-			v1parts = v1.split(':'),
-			v2parts = v2.split(':');
+            delimiter = options && options.delimiter || ":",
+			v1parts = v1.split(delimiter),
+			v2parts = v2.split(delimiter);
 	
 		function isValidPart(x) {
 			return (lexicographical ? /^\d+[A-Za-z]*$/ : /^\d+$/).test(x);
@@ -1298,12 +1304,12 @@ var common = {},
             if(!update["$setOnInsert"])
                 update["$setOnInsert"] = {};
             if(!update["$setOnInsert"].fac)
-                update["$setOnInsert"].fac = params.time.timestamp;
+                update["$setOnInsert"].fac = params.time.mstimestamp;
             
             if(!update["$set"])
                 update["$set"] = {};
             if(!update["$set"].lac)
-                update["$set"].lac = params.time.timestamp;
+                update["$set"].lac = params.time.mstimestamp;
             common.db.collection('app_users' + params.app_id).findAndModify({'_id': params.app_user_id},{}, update, {new:true, upsert:true}, function(err, res) {
                 if(!err && res && res.value)
                     params.app_user = res.value;

@@ -17,7 +17,7 @@ plugins.setConfigs("api", {
     event_limit: 500,
     event_segmentation_limit: 100,
     event_segmentation_value_limit:1000,
-    metric_limit: 5000,
+    metric_limit: 1000,
     sync_plugins: false,
     session_cooldown: 15,
     total_users: true
@@ -122,6 +122,7 @@ if (cluster.isMaster) {
     setTimeout(() => {
         jobs.job('api:ping').replace().schedule('every 1 day');
         jobs.job('api:clear').replace().schedule('every 1 day');
+        jobs.job('api:clearTokens').replace().schedule('every 1 day');
     }, 10000);
 } else {
     var common = require('./utils/common.js');
@@ -182,34 +183,44 @@ if (cluster.isMaster) {
             params.appTimezone = app['timezone'];
             params.app = app;
             params.time = common.initTimeObj(params.appTimezone, params.qstring.timestamp);
-            
-            if(params.app.checksum_salt && params.app.checksum_salt.length && !params.files){ //ignore multipart data requests
-                var payload;
+            if(params.app.checksum_salt && params.app.checksum_salt.length){
+                var payloads = [];
+                payloads.push(params.href.substr(3));
                 if(params.req.method.toLowerCase() == 'post'){
-                    payload = params.req.body;
-                }
-                else{
-                    payload = params.href.substr(3);
+                    payloads.push(params.req.body);
                 }
                 if(typeof params.qstring.checksum !== "undefined"){
-                    payload = payload.replace("&checksum="+params.qstring.checksum, "").replace("checksum="+params.qstring.checksum, "");
-                    if((params.qstring.checksum + "").toUpperCase() != common.crypto.createHash('sha1').update(payload + params.app.checksum_salt).digest('hex').toUpperCase()){
-                        console.log("Checksum did not match", params.href, params.req.body);
+                    for(var i = 0; i < payloads.length; i++){
+                        payloads[i] = payloads[i].replace("&checksum="+params.qstring.checksum, "").replace("checksum="+params.qstring.checksum, "");
+                        payloads[i] = common.crypto.createHash('sha1').update(payloads[i] + params.app.checksum_salt).digest('hex').toUpperCase();
+                    }
+                    if(payloads.indexOf((params.qstring.checksum + "").toUpperCase()) === -1){
+                        console.log("Checksum did not match", params.href, params.req.body, payloads);
                         if (plugins.getConfig("api").safe) {
                             common.returnMessage(params, 400, 'Request does not match checksum');
                         }
                         return done ? done() : false;
                     }
                 }
-                if(typeof params.qstring.checksum256 !== "undefined"){
-                    payload = payload.replace("&checksum256="+params.qstring.checksum256, "").replace("checksum256="+params.qstring.checksum256, "");
-                    if((params.qstring.checksum256 + "").toUpperCase() != common.crypto.createHash('sha256').update(payload + params.app.checksum_salt).digest('hex').toUpperCase()){
-                        console.log("Checksum did not match", params.href, params.req.body);
+                else if(typeof params.qstring.checksum256 !== "undefined"){
+                    for(var i = 0; i < payloads.length; i++){
+                        payloads[i] = payloads[i].replace("&checksum256="+params.qstring.checksum256, "").replace("checksum256="+params.qstring.checksum256, "");
+                        payloads[i] = common.crypto.createHash('sha256').update(payloads[i] + params.app.checksum_salt).digest('hex').toUpperCase();
+                    }
+                    if(payloads.indexOf((params.qstring.checksum256 + "").toUpperCase()) === -1){
+                        console.log("Checksum did not match", params.href, params.req.body, payloads);
                         if (plugins.getConfig("api").safe) {
                             common.returnMessage(params, 400, 'Request does not match checksum');
                         }
                         return done ? done() : false;
                     }
+                }
+                else{
+                    console.log("Request does not have checksum", params.href, params.req.body);
+                    if (plugins.getConfig("api").safe) {
+                        common.returnMessage(params, 400, 'Request does not have checksum');
+                    }
+                    return done ? done() : false;
                 }
             }
             
@@ -236,6 +247,12 @@ if (cluster.isMaster) {
             
             common.db.collection('app_users' + params.app_id).findOne({'_id': params.app_user_id }, function (err, user){
                 params.app_user = user || {};
+                
+                //check unique milisecond timestamp, if it is the same as the last request had, 
+                //then we are having duplicate request, due to sudden connection termination
+                if(params.time.mstimestamp === params.app_user.lac){
+                    params.cancelRequest = true;
+                }
                 
                 if (params.qstring.metrics && typeof params.qstring.metrics === "string") {		
                     try {		
@@ -428,7 +445,7 @@ if (cluster.isMaster) {
                                 });
                             } else {
                                 //update lac, all other requests do updates to app_users and update lac automatically
-                                common.updateAppUser(params, {$set:{lac:params.time.timestamp}});
+                                common.updateAppUser(params, {$set:{lac:params.time.mstimestamp}});
                                 
                                 // begin_session, session_duration and end_session handle incrementing request count in usage.js
                                 var dbDateIds = common.getDateIds(params),
@@ -443,6 +460,9 @@ if (cluster.isMaster) {
                         }
                     }
                 } else {
+                    if (plugins.getConfig("api").safe && !params.res.finished) {
+                        common.returnMessage(params, 200, 'Request ignored');
+                    }
                     return done ? done() : false;
                 }
             });
@@ -973,7 +993,12 @@ if (cluster.isMaster) {
                             switch (paths[3]) {
                                 case 'all':
                                     validateUserForMgmtReadAPI(function(){
-                                        params.qstring.query = params.qstring.query || {};
+                                        if(typeof params.qstring.query === "string"){
+                                            try{
+                                                params.qstring.query = JSON.parse(params.qstring.query);
+                                            }
+                                            catch(ex){params.qstring.query = {};}
+                                        }
                                         params.qstring.query.app_id = params.qstring.app_id;
                                         taskmanager.getResults({db:common.db, query:params.qstring.query}, function(err, res){
                                             common.returnOutput(params, res || []);
@@ -1026,6 +1051,14 @@ if (cluster.isMaster) {
                                 common.returnMessage(params, 400, 'Missing parameter "api_key"');
                                 return false;
                             }
+                            
+                            function reviver(key, value) {
+                                if (value.toString().indexOf("__REGEXP ") == 0) {
+                                    var m = value.split("__REGEXP ")[1].match(/\/(.*)\/(.*)?/);
+                                    return new RegExp(m[1], m[2] || "");
+                                } else
+                                    return value;
+                            }
             
                             switch (paths[3]) {
                                 case 'db':
@@ -1036,7 +1069,7 @@ if (cluster.isMaster) {
                                         }
                                         if(typeof params.qstring.query === "string"){
                                             try{
-                                                params.qstring.query = JSON.parse(params.qstring.query);
+                                                params.qstring.query = JSON.parse(params.qstring.query, reviver);
                                             }
                                             catch(ex){params.qstring.query = null;}
                                         }
@@ -1098,7 +1131,7 @@ if (cluster.isMaster) {
                                             common.returnMessage(params, 400, 'Missing parameter "data"');
                                             return false;
                                         }
-                                        if(typeof params.qstring.data === "string"){
+                                        if(typeof params.qstring.data === "string" && !params.qstring.raw){
                                             try{
                                                 params.qstring.data = JSON.parse(params.qstring.data);
                                             }
@@ -1134,8 +1167,17 @@ if (cluster.isMaster) {
                         }
                         case '/o/token':
                         {
+                            var ttl, multi;
+                            if(params.qstring.ttl)
+                               ttl = parseInt(params.qstring.ttl);
+                            else
+                                ttl = 1800;
+                            if(params.qstring.multi)
+                               multi = true;
+                            else
+                                multi = false;
                             validateUserForDataReadAPI(params, function(){
-                                authorize.save({db:common.db, callback:function(err, token){
+                                authorize.save({db:common.db, ttl:ttl, multi:multi, owner:params.member._id+"", app:params.app_id+"", callback:function(err, token){
                                     if(err){
                                         common.returnMessage(params, 404, 'DB Error');
                                     }

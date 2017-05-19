@@ -82,12 +82,19 @@ window.PluginsView = countlyView.extend({
             var tableHeaderTop = $("#plugins-table").find("thead").offset().top;
 
             $(window).on("scroll", function(e) {
+                var topBarHeight = $("#top-bar").outerHeight();
                 var $fixedHeader = $("#sticky-plugin-header");
 
-                if ($(this).scrollTop() > navigationTop) {
+                if ($(this).scrollTop() > navigationTop - topBarHeight) {
                     var width = $("#content-container").width();
                     $fixedHeader.addClass("fixed");
                     $fixedHeader.css({width: width});
+
+                    if (topBarHeight) {
+                        $fixedHeader.css({top: topBarHeight});
+                    } else {
+                        $fixedHeader.css({top: 0});
+                    }
                 } else {
                     $fixedHeader.removeClass("fixed");
                     $fixedHeader.css({width: ""});
@@ -335,13 +342,26 @@ window.ConfigurationsView = countlyView.extend({
             "reset": this.reset
         };
         var self = this;
+        if(this.success){
+            CountlyHelpers.notify({
+                title: jQuery.i18n.map["configs.changed"],
+                message: jQuery.i18n.map["configs.saved"]
+            });
+            this.success = false;
+            if(typeof history !== "undefined" && typeof history.replaceState !== "undefined"){
+                if(this.userConfig)
+                    history.replaceState(undefined, undefined, "#/manage/user-settings");
+                else
+                    history.replaceState(undefined, undefined, "#/manage/configurations");
+            }
+        }
         if (!isRefresh) {
             $(this.el).html(this.template(this.templateData));
             this.changes = {};
             this.cache = JSON.parse(JSON.stringify(this.configsData));
             
-            $(".configs #username").val($("#menu-username").text());
-            $(".configs #api-key").val($("#user-api-key").val());
+            $(".configs #username").val(countlyGlobal["member"].username);
+            $(".configs #api-key").val(countlyGlobal["member"].api_key);
             
             $("#configs-back").click(function(){
                 window.history.back();
@@ -553,7 +573,6 @@ window.ConfigurationsView = countlyView.extend({
                                     return true;
                                 }
                                 $("#user-api-key").val(api_key);
-                                countlyGlobal["member"].api_key = api_key;
                                 $(".configs #old_pwd").val("");
                                 $(".configs #new_pwd").val("");
                                 $(".configs #re_new_pwd").val("");
@@ -602,13 +621,11 @@ window.ConfigurationsView = countlyView.extend({
                             });
                         }
                         else{
-                            CountlyHelpers.notify({
-                                title: jQuery.i18n.map["configs.changed"],
-                                message: jQuery.i18n.map["configs.saved"]
-                            });
                             self.configsData = JSON.parse(JSON.stringify(self.cache));
                             $("#configs-apply-changes").hide();
                             self.changes = {};
+                            location.hash = "#/manage/configurations/success";
+                            window.location.reload(true);
                         }
                     });
                 }
@@ -621,12 +638,19 @@ window.ConfigurationsView = countlyView.extend({
             var navigationTop = $("#sticky-config-header").offset().top;
 
             $(window).on("scroll", function(e) {
+                var topBarHeight = $("#top-bar").outerHeight();
                 var $fixedHeader = $("#sticky-config-header");
 
-                if ($(this).scrollTop() > navigationTop) {
+                if ($(this).scrollTop() > navigationTop - topBarHeight) {
                     var width = $("#content-container").width();
                     $fixedHeader.addClass("fixed");
                     $fixedHeader.css({width: width});
+
+                    if (topBarHeight) {
+                        $fixedHeader.css({top: topBarHeight});
+                    } else {
+                        $fixedHeader.css({top: 0});
+                    }
                 } else {
                     $fixedHeader.removeClass("fixed");
                     $fixedHeader.css({width: ""});
@@ -782,14 +806,32 @@ if(countlyGlobal["member"].global_admin){
         this.configurationsView.namespace = null;
         this.configurationsView.reset = false;
         this.configurationsView.userConfig = false;
+        this.configurationsView.success = false;
         this.renderWhenReady(this.configurationsView);
     });
     
     app.route('/manage/configurations/:namespace', 'configurations_namespace', function (namespace) {
-        this.configurationsView.namespace = namespace;
-        this.configurationsView.reset = false;
-        this.configurationsView.userConfig = false;
-        this.renderWhenReady(this.configurationsView);
+        if(namespace == "reset"){
+            this.configurationsView.namespace = null;
+            this.configurationsView.reset = true;
+            this.configurationsView.userConfig = false;
+            this.configurationsView.success = false;
+            this.renderWhenReady(this.configurationsView);
+        }
+        else if(namespace == "success"){
+            this.configurationsView.namespace = null;
+            this.configurationsView.reset = false;
+            this.configurationsView.userConfig = false;
+            this.configurationsView.success = true;
+            this.renderWhenReady(this.configurationsView);
+        }
+        else{
+            this.configurationsView.namespace = namespace;
+            this.configurationsView.reset = false;
+            this.configurationsView.userConfig = false;
+            this.configurationsView.success = false;
+            this.renderWhenReady(this.configurationsView);
+        }
     });
 } 
 
@@ -797,14 +839,21 @@ app.route('/manage/user-settings', 'user-settings', function () {
     this.configurationsView.namespace = null;
     this.configurationsView.reset = false;
     this.configurationsView.userConfig = true;
+    this.configurationsView.success = false;
     this.renderWhenReady(this.configurationsView);
 });
 
 app.route('/manage/user-settings/:namespace', 'user-settings_namespace', function (namespace) {
-    if(namespace == "reset")
+    if(namespace == "reset"){
         this.configurationsView.reset = true;
-    else
+        this.configurationsView.success = false;
+        this.configurationsView.namespace = null;
+    }
+    else{
+        this.configurationsView.reset = false;
+        this.configurationsView.success = false;
         this.configurationsView.namespace = namespace;
+    }
     this.configurationsView.userConfig = true;
     this.renderWhenReady(this.configurationsView);
 });

@@ -43,7 +43,9 @@ module.exports = function(grunt) {
 				'frontend/express/public/javascripts/dom/dataTables/js/jquery.dataTables.js',
 				'frontend/express/public/javascripts/dom/dataTables/js/ZeroClipboard.js',
 				'frontend/express/public/javascripts/dom/dataTables/js/TableTools.js',
-                'frontend/express/public/javascripts/dom/pace/pace.min.js'
+                'frontend/express/public/javascripts/dom/pace/pace.min.js',
+                'frontend/express/public/javascripts/dom/drop/tether.min.js',
+                'frontend/express/public/javascripts/dom/drop/drop.min.js'
 			],
 			dest: 'frontend/express/public/javascripts/min/countly.dom.concat.js'
 		},
@@ -133,6 +135,7 @@ module.exports = function(grunt) {
 	    			'frontend/express/public/javascripts/dom/tipsy/tipsy.css',
 	    		    'frontend/express/public/javascripts/visualization/rickshaw/rickshaw.min.css',
                     'frontend/express/public/javascripts/dom/pace/pace-theme-flash.css',
+                    'frontend/express/public/javascripts/dom/drop/drop-theme-countly.min.css',
                     'frontend/express/public/javascripts/utils/tooltipster/tooltipster.bundle.min.css'
 	    		]
     		}
@@ -164,6 +167,17 @@ module.exports = function(grunt) {
   	var plugins = require('./plugins/plugins.json'), js = [], css = [], img = [], fs = require('fs'), path = require('path');
   	console.log('Preparing production files for following plugins: %j', plugins);
 
+  	if (plugins.indexOf('push') !== -1) {
+  		if (plugins.indexOf('geo') !== -1) {
+  			plugins.splice(plugins.indexOf('geo'), 1);
+  			plugins.push('geo');
+  		}
+  		if (plugins.indexOf('push_approver') !== -1) {
+  			plugins.splice(plugins.indexOf('push_approver'), 1);
+  			plugins.push('push_approver');
+  		}
+  	}
+
   	plugins.forEach(function(plugin){
   		var files, pluginPath = path.join(__dirname, 'plugins', plugin),
   			javascripts = path.join(pluginPath, 'frontend/public/javascripts'),
@@ -184,7 +198,7 @@ module.exports = function(grunt) {
 
 	  			files.forEach(function(name){
 	  				var file = path.join(javascripts, name);
-	  				if (fs.statSync(file).isFile()) {
+	  				if (fs.statSync(file).isFile() && name.indexOf('.') !== 0) {
 	  					js.push('plugins/' + plugin + '/frontend/public/javascripts/' + name);
 	  				}
 	  			});

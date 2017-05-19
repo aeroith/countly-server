@@ -45,8 +45,7 @@
     * @param {string=} msg.message - main notification text
     * @param {string=} msg.info - some additional information to display in notification
     * @param {number=} [msg.delay=10000] - delay time in miliseconds before displaying notification
-    * @param {string=} [msg.icon=fa fa-info] - css class for font icond to be used as notification icon
-    * @param {string=} [msg.type=ok] - message type, accepted values ok and error
+    * @param {string=} [msg.type=ok] - message type, accepted values ok, error and warning
     * @param {string=} [msg.position=top right] - message position
     * @param {string=} [msg.sticky=false] - should message stick until closed
     * @param {string=} [msg.clearAll=false] - clear all previous notifications upon showing this one
@@ -60,6 +59,23 @@
     * });
     */
     CountlyHelpers.notify = function (msg) {
+        var iconToUse;
+
+        switch (msg.type) {
+            case "error":
+                iconToUse = "ion-close-circled";
+                break;
+            case "warning":
+            case "yellow":
+            case "blue":
+            case "purple":
+                iconToUse = "ion-record";
+                break;
+            default:
+                iconToUse = "ion-checkmark-circled";
+                break;
+        }
+
         $.titleAlert((msg.title || msg.message || msg.info || "Notification"), {
             requireBlur:true,
             stopOnFocus:true,
@@ -71,7 +87,7 @@
                 title: msg.title || "Notification",
                 message:msg.message || "",
                 info:msg.info || "",
-                icon:msg.icon || 'fa fa-info'
+                icon: iconToUse
             },
             theme:'awesome '+ (msg.type || "ok"),
             position: msg.position || 'top right',
@@ -193,7 +209,151 @@
         return dialog;
     };
     
-        /**
+    /**
+    * Displays database export dialog
+    * @param {number} count - total count of documents to export
+    * @param {object} data - data for export query to use when constructing url
+    * @param {boolean} asDialog - open it as dialog
+    * @returns {object} jQuery object reference to dialog
+    * @example
+    * var dialog = CountlyHelpers.export(300000);
+    * //later when done
+    * CountlyHelpers.removeDialog(dialog);
+    */
+    CountlyHelpers.export = function (count, data, asDialog) {
+        var hardLimit = 100000;
+        var pages = Math.ceil(count/hardLimit);
+        var dialog = $("#cly-export").clone();
+        var type = "csv";
+        var page = 0;
+        dialog.removeAttr("id");
+        dialog.find(".details").text(jQuery.i18n.prop("export.export-number", (count+"").replace(/(\d)(?=(\d{3})+$)/g, '$1 '), pages));
+        if(count <= hardLimit){
+            dialog.find(".cly-select").hide();
+        }
+        else{
+            for(var i = 0; i < pages; i++){
+                dialog.find(".select-items > div").append('<div data-value="'+i+'" class="segmentation-option item">'+((i*hardLimit+1)+"").replace(/(\d)(?=(\d{3})+$)/g, '$1 ')+' - '+(Math.min((i+1)*hardLimit, count)+"").replace(/(\d)(?=(\d{3})+$)/g, '$1 ')+ " " + jQuery.i18n.map["export.documents"]+'</div>');
+            }
+            dialog.find(".export-data").addClass("disabled");
+        }
+        dialog.find(".button").click(function(){
+            dialog.find(".button-selector .button").removeClass("selected");
+            dialog.find(".button-selector .button").removeClass("active");
+            $(this).addClass("selected");
+            $(this).addClass("active");
+            type = $(this).attr("id").replace("export-", "");
+        });
+        dialog.find(".segmentation-option").on("click", function () {
+            page = $(this).data("value");
+            dialog.find(".export-data").removeClass("disabled")
+        });
+        dialog.find(".export-data").click(function(){
+            if($(this).hasClass("disabled"))
+                return;
+            data.type = type;
+            data.limit = hardLimit;
+            data.skip = page*hardLimit;
+            var url = "/o/export/db";
+            var form = $('<form method="POST" action="' + url + '">');
+            $.each(data, function(k, v) {
+                form.append($('<input type="hidden" name="' + k + '" value="' + v + '">'));
+            });
+            $('body').append(form);
+            form.submit();
+        });
+        if(asDialog)
+            revealDialog(dialog);
+        return dialog;
+    };
+    
+    /**
+    * Displays raw data table export dialog
+    * @param {object} data - data for export query to use when constructing url
+    * @param {boolean} asDialog - open it as dialog
+    * @returns {object} jQuery object reference to dialog
+    * @example
+    * var dialog = CountlyHelpers.export(300000);
+    * //later when done
+    * CountlyHelpers.removeDialog(dialog);
+    */
+    CountlyHelpers.tableExport = function (dtable, data, asDialog) {
+        function getFileName(){
+            var name = "countly";
+            if($(".widget-header .title").length)
+                name = $(".widget-header .title").first().text();
+            return (name.charAt(0).toUpperCase() + name.slice(1).toLowerCase())+"-"+moment().format("DD-MMM-YYYY");
+        }
+        function getExportData(dtable, type){
+            var tableCols = dtable.fnSettings().aoColumns,
+                retStr = "",
+                tableData = [];
+            if(tableCols[0].sExport && app.dataExports[tableCols[0].sExport]){
+                tableData = app.dataExports[tableCols[0].sExport]();
+            }
+            else{
+                tableData = TableTools.fnGetInstance(dtable[0]).fnGetTableData({"sAction":"flash_save","sTag":"default","sLinerTag":"default","sButtonClass":"DTTT_button_xls","sButtonText":"Save for Excel","sTitle":"","sToolTip":"","sCharSet":"utf16le","bBomInc":true,"sFileName":"*.csv","sFieldBoundary":"","sFieldSeperator":"\t","sNewLine":"auto","mColumns":"all","bHeader":true,"bFooter":true,"bOpenRows":false,"bSelectedOnly":false,"fnMouseover":null,"fnMouseout":null,"fnSelect":null,"fnComplete":null,"fnInit":null,"fnCellRender":null,"sExtends":"xls"});
+                tableData = tableData.split(/\r\n|\r|\n/g);
+                tableData.shift();
+                for(var i = 0; i < tableData.length; i++){
+                    tableData[i] = tableData[i].split('\t');   
+                }
+                var retData = [];
+                for (var i = 0;  i < tableData.length; i++) {
+                    var ob = {};
+                    for (var colIndex = 0;  colIndex < tableCols.length; colIndex++) {
+                        if (tableCols[colIndex].sType == "formatted-num") {
+                            ob[tableCols[colIndex].sTitle] = tableData[i][colIndex].replace(/,/g, "");
+                        } else if (tableCols[colIndex].sType == "percent") {
+                            ob[tableCols[colIndex].sTitle] = tableData[i][colIndex].replace("%", "");
+                        } else if (tableCols[colIndex].sType == "format-ago" || tableCols[colIndex].sType == "event-timeline") {
+                            ob[tableCols[colIndex].sTitle] = tableData[i][colIndex].split("|").pop();
+                        }
+                        else{
+                            ob[tableCols[colIndex].sTitle] = tableData[i][colIndex];
+                        }
+                    }
+                    retData.push(ob);
+                }
+                tableData = retData;
+            }               
+            return tableData;
+        }
+        var dialog = $("#cly-export").clone();
+        var type = "csv";
+        dialog.removeAttr("id");
+        dialog.find(".details").hide();
+        dialog.find(".cly-select").hide();
+        dialog.find(".button").click(function(){
+            dialog.find(".button-selector .button").removeClass("selected");
+            dialog.find(".button-selector .button").removeClass("active");
+            $(this).addClass("selected");
+            $(this).addClass("active");
+            type = $(this).attr("id").replace("export-", "");
+        });
+        dialog.find(".export-data").click(function(){
+            if($(this).hasClass("disabled"))
+                return;
+            data.type = type;
+            data.data = JSON.stringify(getExportData(dtable, type));
+            data.filename = getFileName(type);
+            var url = "/o/export/data";
+            var form = $('<form method="POST" action="' + url + '">');
+            $.each(data, function(k, v) {
+                if(k === "data")
+                    form.append($('<textarea style="visibility:hidden;position:absolute;display:none;" name="'+k+'">'+v+'</textarea>'));
+                else
+                    form.append($('<input type="hidden" name="' + k + '" value="' + v + '">'));
+            });
+            $('body').append(form);
+            form.submit();
+        });
+        if(asDialog)
+            revealDialog(dialog);
+        return dialog;
+    };
+    
+    /**
     * Instead of creating dialog object you can use this method and directly pass jquery element to be used as dialog content, which means complete customization
     * @param {jquery_object} dialog - jQuery object unnattached, like cloned existing object
     * @example
@@ -202,7 +362,6 @@
     */
     CountlyHelpers.revealDialog = function (dialog) {
         $("body").append(dialog);
-
         var dialogHeight = dialog.height(),
             dialogWidth = dialog.outerWidth() + 2;
 
@@ -682,7 +841,31 @@
             return getSelected($(this));
         };
 
-        $.fn.clyMultiSelectSetSelection = function(value, name) {
+        $.fn.clyMultiSelectSetSelection = function(valNameArr) {
+            var $multiSelect = $(this),
+                $selectionContainer = $multiSelect.find(".text");
+
+            $(this).find(".selection").remove();
+
+            for (var i = 0; i < valNameArr.length; i++) {
+                var name = valNameArr[i].name,
+                    value = valNameArr[i].value;
+
+                var $selection = $("<div class='selection'></div>");
+
+                $selection.text(name);
+                $selection.attr("data-value", value);
+                $selection.append("<div class='remove'><i class='ion-android-close'></i></div>");
+
+                $selectionContainer.append($selection);
+            }
+
+            $(this).addClass("selection-exists");
+            $(this).data("value", getSelected($(this)));
+            $(this).trigger("cly-multi-select-change", [getSelected($(this))]);
+        };
+
+        $.fn.clyMultiSelectClearSelection = function() {
             $(this).find(".selection").remove();
             $(this).data("value", getSelected($(this)));
             $(this).removeClass("selection-exists");
