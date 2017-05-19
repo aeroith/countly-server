@@ -15,6 +15,9 @@ const plugin = {}
             // increase one every time
             dow_hour[field] = 1;
             events.forEach((e) => {
+                // Remove Session prefix
+                if(e.key.startsWith('[CLY]_'))
+                    e.key = e.key.charAt(6).toUpperCase() + e.key.slice(7);
                 common.db.collection('timesofday').update({
                     _id: common.md5Hash(app_id + e.key)
                 },
