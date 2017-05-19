@@ -27,7 +27,9 @@ const plugin = {}
                 },
                 { upsert: true }) 
             })
+            return true;
         }
+        return false;
     })
 }(plugin));
 
